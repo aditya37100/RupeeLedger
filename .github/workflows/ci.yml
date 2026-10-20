@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (echo 'These files need gofmt:'; gofmt -l .; exit 1)
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Test (race + coverage)
+        # -p 1 serialises package test binaries so the embedded-postgres
+        # instances don't race extracting to a shared cache. Generated code
+        # (internal/ledgerpb) and the Kafka adapter are excluded from coverage.
+        run: go test -race -covermode=atomic -coverprofile=cover.out -p 1 ./internal/ledger ./internal/api ./internal/grpcapi ./internal/events ./internal/origination ./internal/aml
+
+      - name: Coverage gate (>= 80%)
+        run: |
+          total=$(go tool cover -func=cover.out | tail -1 | awk '{print $3}' | tr -d '%')
+          echo "Total coverage: ${total}%"
+          awk "BEGIN{ exit !(${total} >= 80) }"
+
+  analytics:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install dbt-duckdb
+      - name: dbt build (seed, models, tests on DuckDB)
+        working-directory: analytics
+        run: dbt build --profiles-dir .
